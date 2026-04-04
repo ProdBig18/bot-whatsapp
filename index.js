@@ -1,11 +1,35 @@
 const axios = require('axios');
 
 const TOKEN = '8287060645:AAEZItCeLCCw9aAivwy9_JuyAhj1FSupWiM';
-const CHAT_ID = '8151289296';
-const TESTFLIGHT_URL = 'https://testflight.apple.com/join/oscYikr0';
+const OWNER_CHAT_ID = '8151289296';
 
-let notified = false;
+const APPS = [
+  {
+    key: 'whatsapp',
+    label: 'WhatsApp Messenger',
+    url: 'https://wabetainfo.com/wa-testflight/',
+    detectAny: ['whatsapp messenger'],
+    ignoreIfContains: ['whatsapp business'],
+    enabled: true
+  },
+  {
+    key: 'instagram',
+    label: 'Instagram',
+    url: 'https://testflight.apple.com/join/YirpiDN2',
+    detectAny: ['instagram', 'ig mobile'],
+    ignoreIfContains: [],
+    enabled: true
+  }
+];
+
 let lastUpdateId = 0;
+const notifiedOpen = {};
+const appStatus = {};
+
+for (const app of APPS) {
+  notifiedOpen[app.key] = false;
+  appStatus[app.key] = 'Iniciando...';
+}
 
 async function sendMessage(chatId, text) {
   try {
@@ -14,112 +38,67 @@ async function sendMessage(chatId, text) {
       text
     });
   } catch (err) {
-    console.error('Erro Telegram:', err.response?.data || err.message);
+    console.error(err.message);
   }
 }
 
-async function checkTestFlight() {
-  try {
-    const res = await axios.get(TESTFLIGHT_URL, {
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
+function isFull(html) {
+  const t = html.toLowerCase();
+  return t.includes('this beta is full') || t.includes("isn't accepting");
+}
 
-    const html = String(res.data || '').toLowerCase();
+function isAvailable(html) {
+  const t = html.toLowerCase();
+  return t.includes('open in testflight') || t.includes('accept');
+}
 
-    const isFull =
-      html.includes('this beta is full') ||
-      html.includes("isn't accepting any new testers right now") ||
-      html.includes('isn’t accepting any new testers right now');
+async function checkApps() {
+  for (const app of APPS) {
+    try {
+      const res = await axios.get(app.url);
+      const html = String(res.data);
 
-    let appName = 'Desconhecido';
-
-    if (html.includes('whatsapp messenger')) {
-      appName = 'WhatsApp NORMAL';
-    } else if (html.includes('whatsapp business')) {
-      appName = 'WhatsApp BUSINESS';
-    }
-
-    if (appName === 'WhatsApp BUSINESS') {
-      console.log('Link atual aponta para WhatsApp Business. Alerta ignorado.');
-      return;
-    }
-
-    const isAvailable =
-      html.includes('open in testflight') ||
-      html.includes('start testing') ||
-      html.includes('accept');
-
-    if (!isFull && isAvailable) {
-      if (!notified) {
-        notified = true;
-        console.log(`VAGA ABERTA! App: ${appName}`);
-        await sendMessage(
-          CHAT_ID,
-          `🔥 VAGA ABERTA!\n📱 App: ${appName}\n🔗 ${TESTFLIGHT_URL}`
-        );
+      if (!isFull(html) && isAvailable(html)) {
+        if (!notifiedOpen[app.key]) {
+          notifiedOpen[app.key] = true;
+          await sendMessage(OWNER_CHAT_ID, `🔥 VAGA ABERTA!\n📱 ${app.label}\n🔗 ${app.url}`);
+        }
       } else {
-        console.log('Vaga continua aberta. Aviso já enviado.');
+        notifiedOpen[app.key] = false;
       }
-    } else {
-      notified = false;
-      console.log(`Ainda cheio... App detectado: ${appName}`);
+
+    } catch (e) {
+      console.log('erro', e.message);
     }
-  } catch (err) {
-    console.error('Erro TestFlight:', err.response?.data || err.message);
   }
 }
 
-async function checkCommands() {
+async function commands() {
   try {
-    const res = await axios.get(
-      `https://api.telegram.org/bot${TOKEN}/getUpdates?offset=${lastUpdateId + 1}`
-    );
+    const res = await axios.get(`https://api.telegram.org/bot${TOKEN}/getUpdates?offset=${lastUpdateId + 1}`);
+    for (const u of res.data.result) {
+      lastUpdateId = u.update_id;
+      if (!u.message) continue;
 
-    const updates = res.data?.result || [];
-
-    for (const update of updates) {
-      lastUpdateId = update.update_id;
-
-      const msg = update.message;
-      if (!msg || !msg.text) continue;
-
-      const text = msg.text.trim().toLowerCase();
-      const chatId = msg.chat.id;
-
-      let response = '';
+      const chatId = u.message.chat.id;
+      const text = u.message.text;
 
       if (text === '/start') {
-        response =
-          '🚀 Bot ativado!\n\n' +
-          'Eu monitoro vagas do TestFlight e te aviso quando abrir.\n\n' +
-          'Comandos disponíveis:\n' +
-          '/status - ver status\n' +
-          '/link - ver link monitorado\n' +
-          '/ajuda - como funciona';
-      } else if (text === '/status') {
-        response = '📡 Monitoramento ativo 24/7.';
-      } else if (text === '/link') {
-        response = `🔗 Link monitorado:\n${TESTFLIGHT_URL}`;
-      } else if (text === '/ajuda') {
-        response =
-          '❓ Como funciona:\n' +
-          '- Eu verifico periodicamente a página do TestFlight\n' +
-          '- Se detectar vaga aberta, envio alerta no Telegram\n' +
-          '- Se o link apontar para WhatsApp Business, eu ignoro';
+        await sendMessage(chatId, '🚀 Bot ativo! Monitorando WhatsApp + Instagram');
       }
 
-      if (response) {
-        await sendMessage(chatId, response);
+      if (text === '/status') {
+        await sendMessage(chatId, '📡 Rodando 24h');
+      }
+
+      if (text === '/apps') {
+        await sendMessage(chatId, '📱 Apps: WhatsApp + Instagram');
       }
     }
-  } catch (err) {
-    console.error('Erro comandos:', err.response?.data || err.message);
-  }
+  } catch (e) {}
 }
 
-console.log('Bot rodando...');
-checkTestFlight();
-checkCommands();
+setInterval(checkApps, 30000);
+setInterval(commands, 3000);
 
-setInterval(checkTestFlight, 30000);
-setInterval(checkCommands, 3000);
+console.log('BOT ONLINE');
