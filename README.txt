@@ -1,18 +1,15 @@
-BOT PRONTO (JÁ CONFIGURADO)
+BOT PRONTO
 
-Só fazer:
-
-1) Instalar Node.js
-https://nodejs.org
-
-2) Extrair a pasta
-
-3) Abrir terminal na pasta
-
-4) Rodar:
+Como usar no PC:
+1. Instale o Node.js
+2. Abra o terminal na pasta
+3. Rode:
 npm install
 npm start
 
-PRONTO 🚀
+Como subir atualização para o GitHub:
+git add .
+git commit -m "bot atualizado"
+git push
 
-Ele já vai monitorar o WhatsApp Beta e te avisar no Telegram.
+Antes de testar, abra seu bot no Telegram e clique em Start/Iniciar.
