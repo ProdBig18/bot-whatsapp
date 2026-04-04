@@ -1,104 +1,299 @@
 const axios = require('axios');
+const cheerio = require('cheerio');
+const fs = require('fs');
+const path = require('path');
 
 const TOKEN = '8287060645:AAEZItCeLCCw9aAivwy9_JuyAhj1FSupWiM';
 const OWNER_CHAT_ID = '8151289296';
 
-const APPS = [
+const INDEX_URL = 'https://wabetainfo.com/testflight/';
+const STATE_FILE = path.join(__dirname, 'state.json');
+
+const TARGETS = [
   {
     key: 'whatsapp',
-    label: 'WhatsApp Messenger',
-    url: 'https://wabetainfo.com/wa-testflight/',
-    detectAny: ['whatsapp messenger'],
-    ignoreIfContains: ['whatsapp business'],
-    enabled: true
+    matchAny: ['whatsapp messenger', 'whatsapp beta', 'whatsapp'],
+    label: 'WhatsApp Beta'
   },
   {
     key: 'instagram',
-    label: 'Instagram',
-    url: 'https://testflight.apple.com/join/YirpiDN2',
-    detectAny: ['instagram', 'ig mobile'],
-    ignoreIfContains: [],
-    enabled: true
+    matchAny: ['instagram'],
+    label: 'Instagram Beta'
   }
 ];
 
 let lastUpdateId = 0;
-const notifiedOpen = {};
-const appStatus = {};
 
-for (const app of APPS) {
-  notifiedOpen[app.key] = false;
-  appStatus[app.key] = 'Iniciando...';
+function loadState() {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      return JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
+    }
+  } catch (err) {
+    console.error('Erro ao ler state.json:', err.message);
+  }
+
+  return {
+    seenLinks: {},
+    notifiedLinks: {},
+    status: {}
+  };
 }
+
+function saveState(state) {
+  try {
+    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Erro ao salvar state.json:', err.message);
+  }
+}
+
+const state = loadState();
 
 async function sendMessage(chatId, text) {
   try {
     await axios.post(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
       chat_id: chatId,
-      text
+      text,
+      disable_web_page_preview: true
     });
   } catch (err) {
-    console.error(err.message);
+    console.error('Erro Telegram:', err.response?.data || err.message);
   }
 }
 
-function isFull(html) {
-  const t = html.toLowerCase();
-  return t.includes('this beta is full') || t.includes("isn't accepting");
+function normalize(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
 }
 
-function isAvailable(html) {
-  const t = html.toLowerCase();
-  return t.includes('open in testflight') || t.includes('accept');
+function matchesTarget(title, target) {
+  const t = title.toLowerCase();
+  return target.matchAny.some(term => t.includes(term));
 }
 
-async function checkApps() {
-  for (const app of APPS) {
-    try {
-      const res = await axios.get(app.url);
-      const html = String(res.data);
+function detectTestFlightAvailability(html) {
+  const t = html.toLowerCase();
 
-      if (!isFull(html) && isAvailable(html)) {
-        if (!notifiedOpen[app.key]) {
-          notifiedOpen[app.key] = true;
-          await sendMessage(OWNER_CHAT_ID, `🔥 VAGA ABERTA!\n📱 ${app.label}\n🔗 ${app.url}`);
+  const isFull =
+    t.includes('this beta is full') ||
+    t.includes("isn't accepting any new testers right now") ||
+    t.includes('isn’t accepting any new testers right now');
+
+  const isAvailable =
+    t.includes('open in testflight') ||
+    t.includes('start testing') ||
+    t.includes('accept') ||
+    t.includes('install') ||
+    t.includes('instalar');
+
+  return { isFull, isAvailable };
+}
+
+async function fetchIndexEntries() {
+  const res = await axios.get(INDEX_URL, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0'
+    },
+    timeout: 20000
+  });
+
+  const html = String(res.data || '');
+  const $ = cheerio.load(html);
+
+  const entries = [];
+
+  $('a').each((_, el) => {
+    const text = normalize($(el).text());
+    const href = $(el).attr('href');
+
+    if (!text || !href) return;
+
+    let absoluteUrl = href;
+    if (href.startsWith('/')) {
+      absoluteUrl = new URL(href, INDEX_URL).toString();
+    }
+
+    entries.push({
+      title: text,
+      url: absoluteUrl
+    });
+  });
+
+  return entries;
+}
+
+async function resolveTargetUrl(entryUrl) {
+  try {
+    const res = await axios.get(entryUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0'
+      },
+      timeout: 20000
+    });
+
+    const html = String(res.data || '');
+    const $ = cheerio.load(html);
+
+    let tfUrl = null;
+
+    $('a').each((_, el) => {
+      const href = $(el).attr('href');
+      if (href && href.includes('testflight.apple.com')) {
+        tfUrl = href;
+      }
+    });
+
+    return tfUrl || entryUrl;
+  } catch (err) {
+    console.error('Erro ao resolver link:', entryUrl, err.message);
+    return entryUrl;
+  }
+}
+
+async function checkIndex() {
+  try {
+    const entries = await fetchIndexEntries();
+
+    for (const target of TARGETS) {
+      const matched = entries.filter(e => matchesTarget(e.title, target));
+
+      if (!matched.length) {
+        state.status[target.key] = `${target.label}: não encontrado no índice`;
+        continue;
+      }
+
+      const entry = matched[0];
+      const resolvedUrl = await resolveTargetUrl(entry.url);
+      const previous = state.seenLinks[target.key];
+      const previousNotified = state.notifiedLinks[target.key];
+
+      state.seenLinks[target.key] = resolvedUrl;
+
+      if (!previous || previous !== resolvedUrl) {
+        state.status[target.key] = `${target.label}: novo link detectado no índice`;
+
+        if (previousNotified !== resolvedUrl) {
+          await sendMessage(
+            OWNER_CHAT_ID,
+            `🚨 NOVO LINK DETECTADO NO WABETAINFO INDEX!\n` +
+              `📱 ${target.label}\n` +
+              `🔗 ${resolvedUrl}`
+          );
+          state.notifiedLinks[target.key] = resolvedUrl;
         }
       } else {
-        notifiedOpen[app.key] = false;
+        state.status[target.key] = `${target.label}: mesmo link no índice`;
       }
 
-    } catch (e) {
-      console.log('erro', e.message);
+      try {
+        const tfRes = await axios.get(resolvedUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0'
+          },
+          timeout: 20000
+        });
+
+        const tfHtml = String(tfRes.data || '');
+        const { isFull, isAvailable } = detectTestFlightAvailability(tfHtml);
+
+        if (!isFull && isAvailable) {
+          await sendMessage(
+            OWNER_CHAT_ID,
+            `🔥 VAGA ABERTA!\n` +
+              `📱 ${target.label}\n` +
+              `🔗 ${resolvedUrl}`
+          );
+
+          state.status[target.key] = `${target.label}: vaga aberta`;
+        } else {
+          state.status[target.key] = `${target.label}: link encontrado, mas ainda cheio`;
+        }
+      } catch (err) {
+        state.status[target.key] = `${target.label}: erro ao validar TestFlight`;
+      }
     }
+
+    saveState(state);
+  } catch (err) {
+    console.error('Erro ao verificar índice:', err.response?.data || err.message);
   }
 }
 
-async function commands() {
-  try {
-    const res = await axios.get(`https://api.telegram.org/bot${TOKEN}/getUpdates?offset=${lastUpdateId + 1}`);
-    for (const u of res.data.result) {
-      lastUpdateId = u.update_id;
-      if (!u.message) continue;
+function buildStatusText() {
+  const lines = ['📡 Status do monitoramento:\n'];
 
-      const chatId = u.message.chat.id;
-      const text = u.message.text;
+  for (const target of TARGETS) {
+    lines.push(`• ${state.status[target.key] || `${target.label}: sem status`}`);
+  }
 
-      if (text === '/start') {
-        await sendMessage(chatId, '🚀 Bot ativo! Monitorando WhatsApp + Instagram');
-      }
-
-      if (text === '/status') {
-        await sendMessage(chatId, '📡 Rodando 24h');
-      }
-
-      if (text === '/apps') {
-        await sendMessage(chatId, '📱 Apps: WhatsApp + Instagram');
-      }
-    }
-  } catch (e) {}
+  return lines.join('\n');
 }
 
-setInterval(checkApps, 30000);
-setInterval(commands, 3000);
+function buildLinksText() {
+  const lines = ['🔗 Links atuais vistos no índice:\n'];
 
-console.log('BOT ONLINE');
+  for (const target of TARGETS) {
+    const link = state.seenLinks[target.key] || 'nenhum';
+    lines.push(`• ${target.label}\n${link}`);
+  }
+
+  return lines.join('\n\n');
+}
+
+async function checkCommands() {
+  try {
+    const res = await axios.get(
+      `https://api.telegram.org/bot${TOKEN}/getUpdates?offset=${lastUpdateId + 1}`,
+      { timeout: 15000 }
+    );
+
+    const updates = res.data?.result || [];
+
+    for (const update of updates) {
+      lastUpdateId = update.update_id;
+
+      const msg = update.message;
+      if (!msg?.text) continue;
+
+      const text = msg.text.trim().toLowerCase();
+      const chatId = msg.chat.id;
+
+      let response = '';
+
+      if (text === '/start') {
+        response =
+          `🚀 Bot ativado!\n\n` +
+          `Eu monitoro apenas o índice TestFlight do WABetaInfo.\n` +
+          `Filtro só WhatsApp Beta e Instagram Beta quando estiverem no índice.\n\n` +
+          `Comandos:\n` +
+          `/status - ver status\n` +
+          `/links - ver links atuais\n` +
+          `/ajuda - como funciona`;
+      } else if (text === '/status') {
+        response = buildStatusText();
+      } else if (text === '/links') {
+        response = buildLinksText();
+      } else if (text === '/ajuda') {
+        response =
+          `❓ Como funciona:\n` +
+          `- Leio o índice do WABetaInfo\n` +
+          `- Filtro só WhatsApp Beta e Instagram Beta\n` +
+          `- Se surgir link novo, te aviso\n` +
+          `- Depois valido o TestFlight e aviso se a vaga estiver aberta`;
+      }
+
+      if (response) {
+        await sendMessage(chatId, response);
+      }
+    }
+  } catch (err) {
+    console.error('Erro comandos:', err.response?.data || err.message);
+  }
+}
+
+console.log('Bot monitorando o WABetaInfo TestFlight Index...');
+checkIndex();
+checkCommands();
+
+setInterval(checkIndex, 60 * 1000);
+setInterval(checkCommands, 3000);
