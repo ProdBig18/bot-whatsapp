@@ -36,6 +36,7 @@ function loadState() {
   return {
     seenLinks: {},
     notifiedLinks: {},
+    notifiedOpen: {},
     status: {}
   };
 }
@@ -87,6 +88,27 @@ function detectTestFlightAvailability(html) {
     t.includes('instalar');
 
   return { isFull, isAvailable };
+}
+
+function extractVersionInfo(html) {
+  const text = String(html || '');
+
+  const versionMatch =
+    text.match(/Vers[aã]o\s*<[^>]*>\s*([0-9]+(?:\.[0-9]+)+)/i) ||
+    text.match(/Vers[aã]o\s*([0-9]+(?:\.[0-9]+)+)/i) ||
+    text.match(/Version\s*<[^>]*>\s*([0-9]+(?:\.[0-9]+)+)/i) ||
+    text.match(/Version\s*([0-9]+(?:\.[0-9]+)+)/i);
+
+  const buildMatch =
+    text.match(/Compila[cç][aã]o\s*<[^>]*>\s*([0-9]+)/i) ||
+    text.match(/Compila[cç][aã]o\s*([0-9]+)/i) ||
+    text.match(/Build\s*<[^>]*>\s*([0-9]+)/i) ||
+    text.match(/Build\s*([0-9]+)/i);
+
+  return {
+    version: versionMatch ? versionMatch[1] : null,
+    build: buildMatch ? buildMatch[1] : null
+  };
 }
 
 async function fetchIndexEntries() {
@@ -150,6 +172,13 @@ async function resolveTargetUrl(entryUrl) {
   }
 }
 
+function buildVersionSuffix(version, build) {
+  if (version && build) return ` (v${version} build ${build})`;
+  if (version) return ` (v${version})`;
+  if (build) return ` (build ${build})`;
+  return '';
+}
+
 async function checkIndex() {
   try {
     const entries = await fetchIndexEntries();
@@ -159,6 +188,7 @@ async function checkIndex() {
 
       if (!matched.length) {
         state.status[target.key] = `${target.label}: não encontrado no índice`;
+        state.notifiedOpen[target.key] = false;
         continue;
       }
 
@@ -195,21 +225,35 @@ async function checkIndex() {
 
         const tfHtml = String(tfRes.data || '');
         const { isFull, isAvailable } = detectTestFlightAvailability(tfHtml);
+        const { version, build } = extractVersionInfo(tfHtml);
+        const versionSuffix = buildVersionSuffix(version, build);
 
         if (!isFull && isAvailable) {
-          await sendMessage(
-            OWNER_CHAT_ID,
-            `🔥 VAGA ABERTA!\n` +
-              `📱 ${target.label}\n` +
-              `🔗 ${resolvedUrl}`
-          );
+          state.status[target.key] = `${target.label}: vaga aberta${versionSuffix}`;
 
-          state.status[target.key] = `${target.label}: vaga aberta`;
+          const openKey = `${resolvedUrl}|${version || ''}|${build || ''}`;
+          if (state.notifiedOpen[target.key] !== openKey) {
+            const versionLine = version ? `🧪 Versão: ${version}\n` : '';
+            const buildLine = build ? `🏗️ Build: ${build}\n` : '';
+
+            await sendMessage(
+              OWNER_CHAT_ID,
+              `🔥 VAGA ABERTA!\n` +
+                `📱 ${target.label}\n` +
+                versionLine +
+                buildLine +
+                `🔗 ${resolvedUrl}`
+            );
+
+            state.notifiedOpen[target.key] = openKey;
+          }
         } else {
-          state.status[target.key] = `${target.label}: link encontrado, mas ainda cheio`;
+          state.status[target.key] = `${target.label}: link encontrado, mas ainda cheio${versionSuffix}`;
+          state.notifiedOpen[target.key] = false;
         }
       } catch (err) {
         state.status[target.key] = `${target.label}: erro ao validar TestFlight`;
+        state.notifiedOpen[target.key] = false;
       }
     }
 
@@ -279,7 +323,8 @@ async function checkCommands() {
           `- Leio o índice do WABetaInfo\n` +
           `- Filtro só WhatsApp Beta e Instagram Beta\n` +
           `- Se surgir link novo, te aviso\n` +
-          `- Depois valido o TestFlight e aviso se a vaga estiver aberta`;
+          `- Depois valido o TestFlight\n` +
+          `- Quando possível, mostro versão e build na notificação`;
       }
 
       if (response) {

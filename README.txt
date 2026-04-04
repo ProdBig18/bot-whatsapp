@@ -1,10 +1,11 @@
-BOT PRONTO - WABETAINFO INDEX
+BOT PRONTO - WABETAINFO INDEX + VERSÃO
 
 Esse bot:
 - lê somente o índice do WABetaInfo
 - filtra só WhatsApp Beta e Instagram Beta
 - avisa se surgir um link novo
-- valida o TestFlight e avisa se a vaga abrir
+- valida o TestFlight
+- quando possível, mostra versão e build na notificação
 
 Como usar:
 1. Extraia os arquivos
@@ -15,5 +16,5 @@ npm start
 
 Para subir pro GitHub/Railway:
 git add .
-git commit -m "bot index wabetainfo pronto"
+git commit -m "bot index wabetainfo com versao"
 git push
