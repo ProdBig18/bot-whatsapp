@@ -10,16 +10,8 @@ const INDEX_URL = 'https://wabetainfo.com/testflight/';
 const STATE_FILE = path.join(__dirname, 'state.json');
 
 const TARGETS = [
-  {
-    key: 'whatsapp',
-    matchAny: ['whatsapp messenger', 'whatsapp beta', 'whatsapp'],
-    label: 'WhatsApp Beta'
-  },
-  {
-    key: 'instagram',
-    matchAny: ['instagram'],
-    label: 'Instagram Beta'
-  }
+  { key: 'whatsapp', matchAny: ['whatsapp'], label: 'WhatsApp Beta' },
+  { key: 'instagram', matchAny: ['instagram'], label: 'Instagram Beta' }
 ];
 
 let lastUpdateId = 0;
@@ -29,330 +21,108 @@ function loadState() {
     if (fs.existsSync(STATE_FILE)) {
       return JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
     }
-  } catch (err) {
-    console.error('Erro ao ler state.json:', err.message);
-  }
+  } catch {}
 
-  return {
-    seenLinks: {},
-    notifiedLinks: {},
-    notifiedOpen: {},
-    versions: {},
-    status: {}
-  };
+  return { seenLinks: {}, versions: {} };
 }
 
 function saveState(state) {
-  try {
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Erro ao salvar state.json:', err.message);
-  }
+  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
 const state = loadState();
 
-async function sendMessage(chatId, text) {
-  try {
-    await axios.post(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
-      chat_id: chatId,
-      text,
-      disable_web_page_preview: true
-    });
-  } catch (err) {
-    console.error('Erro Telegram:', err.response?.data || err.message);
-  }
-}
-
-function normalize(text) {
-  return String(text || '').replace(/\s+/g, ' ').trim();
-}
-
-function matchesTarget(title, target) {
-  const t = title.toLowerCase();
-  return target.matchAny.some(term => t.includes(term));
-}
-
-function detectTestFlightAvailability(html) {
-  const t = html.toLowerCase();
-
-  const isFull =
-    t.includes('this beta is full') ||
-    t.includes("isn't accepting any new testers right now") ||
-    t.includes('isn’t accepting any new testers right now');
-
-  const isAvailable =
-    t.includes('open in testflight') ||
-    t.includes('start testing') ||
-    t.includes('accept') ||
-    t.includes('install') ||
-    t.includes('instalar');
-
-  return { isFull, isAvailable };
-}
-
-function extractVersionInfo(html) {
-  const text = String(html || '');
-
-  const versionMatch =
-    text.match(/Vers[aã]o\s*<[^>]*>\s*([0-9]+(?:\.[0-9]+)+)/i) ||
-    text.match(/Vers[aã]o\s*([0-9]+(?:\.[0-9]+)+)/i) ||
-    text.match(/Version\s*<[^>]*>\s*([0-9]+(?:\.[0-9]+)+)/i) ||
-    text.match(/Version\s*([0-9]+(?:\.[0-9]+)+)/i);
-
-  const buildMatch =
-    text.match(/Compila[cç][aã]o\s*<[^>]*>\s*([0-9]+)/i) ||
-    text.match(/Compila[cç][aã]o\s*([0-9]+)/i) ||
-    text.match(/Build\s*<[^>]*>\s*([0-9]+)/i) ||
-    text.match(/Build\s*([0-9]+)/i);
-
-  return {
-    version: versionMatch ? versionMatch[1] : null,
-    build: buildMatch ? buildMatch[1] : null
-  };
-}
-
-async function fetchIndexEntries() {
-  const res = await axios.get(INDEX_URL, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0'
-    },
-    timeout: 20000
+async function sendMessage(text) {
+  await axios.post(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
+    chat_id: OWNER_CHAT_ID,
+    text
   });
+}
 
-  const html = String(res.data || '');
-  const $ = cheerio.load(html);
+async function clearWebhook() {
+  await axios.get(`https://api.telegram.org/bot${TOKEN}/deleteWebhook?drop_pending_updates=true`);
+}
 
-  const entries = [];
+function extractVersion(html) {
+  const v = (html.match(/\d+\.\d+\.\d+/) || [])[0];
+  return v || null;
+}
+
+async function fetchIndex() {
+  const res = await axios.get(INDEX_URL);
+  const $ = cheerio.load(res.data);
+  const links = [];
 
   $('a').each((_, el) => {
-    const text = normalize($(el).text());
+    const text = $(el).text().toLowerCase();
     const href = $(el).attr('href');
-
-    if (!text || !href) return;
-
-    let absoluteUrl = href;
-    if (href.startsWith('/')) {
-      absoluteUrl = new URL(href, INDEX_URL).toString();
-    }
-
-    entries.push({
-      title: text,
-      url: absoluteUrl
-    });
+    if (href && text) links.push({ text, href });
   });
 
-  return entries;
-}
-
-async function resolveTargetUrl(entryUrl) {
-  try {
-    const res = await axios.get(entryUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0'
-      },
-      timeout: 20000
-    });
-
-    const html = String(res.data || '');
-    const $ = cheerio.load(html);
-
-    let tfUrl = null;
-
-    $('a').each((_, el) => {
-      const href = $(el).attr('href');
-      if (href && href.includes('testflight.apple.com')) {
-        tfUrl = href;
-      }
-    });
-
-    return tfUrl || entryUrl;
-  } catch (err) {
-    console.error('Erro ao resolver link:', entryUrl, err.message);
-    return entryUrl;
-  }
-}
-
-function buildVersionSuffix(version, build) {
-  if (version && build) return ` (v${version} build ${build})`;
-  if (version) return ` (v${version})`;
-  if (build) return ` (build ${build})`;
-  return '';
-}
-
-function buildLinksText() {
-  const lines = ['🔗 Links atuais vistos no índice:\n'];
-
-  for (const target of TARGETS) {
-    const link = state.seenLinks[target.key] || 'nenhum';
-    const version = state.versions?.[target.key]?.version || null;
-    const build = state.versions?.[target.key]?.build || null;
-
-    let extra = '';
-    if (version && build) extra = `\n🧪 Versão: ${version}\n🏗️ Build: ${build}`;
-    else if (version) extra = `\n🧪 Versão: ${version}`;
-    else if (build) extra = `\n🏗️ Build: ${build}`;
-
-    lines.push(`• ${target.label}\n${link}${extra}`);
-  }
-
-  return lines.join('\n\n');
-}
-
-function buildStatusText() {
-  const lines = ['📡 Status do monitoramento:\n'];
-
-  for (const target of TARGETS) {
-    lines.push(`• ${state.status[target.key] || `${target.label}: sem status`}`);
-  }
-
-  return lines.join('\n');
+  return links;
 }
 
 async function checkIndex() {
-  try {
-    const entries = await fetchIndexEntries();
+  const links = await fetchIndex();
 
-    for (const target of TARGETS) {
-      const matched = entries.filter(e => matchesTarget(e.title, target));
+  for (const t of TARGETS) {
+    const found = links.find(l => l.text.includes(t.key));
+    if (!found) continue;
 
-      if (!matched.length) {
-        state.status[target.key] = `${target.label}: não encontrado no índice`;
-        state.notifiedOpen[target.key] = false;
-        continue;
-      }
+    const url = found.href;
+    const prev = state.seenLinks[t.key];
 
-      const entry = matched[0];
-      const resolvedUrl = await resolveTargetUrl(entry.url);
-      const previous = state.seenLinks[target.key];
+    const page = await axios.get(url);
+    const html = page.data;
+    const version = extractVersion(html);
 
-      state.seenLinks[target.key] = resolvedUrl;
+    state.seenLinks[t.key] = url;
+    state.versions[t.key] = version;
 
-      try {
-        const tfRes = await axios.get(resolvedUrl, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0'
-          },
-          timeout: 20000
-        });
-
-        const tfHtml = String(tfRes.data || '');
-        const { isFull, isAvailable } = detectTestFlightAvailability(tfHtml);
-        const { version, build } = extractVersionInfo(tfHtml);
-
-        if (!state.versions) state.versions = {};
-        state.versions[target.key] = { version, build };
-
-        const versionLine = version ? `🧪 Versão: ${version}\n` : '';
-        const buildLine = build ? `🏗️ Build: ${build}\n` : '';
-        const versionSuffix = buildVersionSuffix(version, build);
-
-        if (!previous || previous !== resolvedUrl) {
-          state.status[target.key] = `${target.label}: novo link detectado no índice${versionSuffix}`;
-
-          await sendMessage(
-            OWNER_CHAT_ID,
-            `🚨 NOVO LINK DETECTADO NO WABETAINFO INDEX!\n` +
-              `📱 ${target.label}\n` +
-              versionLine +
-              buildLine +
-              `🔗 ${resolvedUrl}`
-          );
-
-          state.notifiedLinks[target.key] = resolvedUrl;
-        } else {
-          state.status[target.key] = `${target.label}: mesmo link no índice${versionSuffix}`;
-        }
-
-        if (!isFull && isAvailable) {
-          const openKey = `${resolvedUrl}|${version || ''}|${build || ''}`;
-
-          if (state.notifiedOpen[target.key] !== openKey) {
-            await sendMessage(
-              OWNER_CHAT_ID,
-              `🔥 VAGA ABERTA!\n` +
-                `📱 ${target.label}\n` +
-                versionLine +
-                buildLine +
-                `🔗 ${resolvedUrl}`
-            );
-
-            state.notifiedOpen[target.key] = openKey;
-          }
-
-          state.status[target.key] = `${target.label}: vaga aberta${versionSuffix}`;
-        } else {
-          state.status[target.key] = `${target.label}: link encontrado, mas ainda cheio${versionSuffix}`;
-          state.notifiedOpen[target.key] = false;
-        }
-      } catch (err) {
-        state.status[target.key] = `${target.label}: erro ao validar TestFlight`;
-        state.notifiedOpen[target.key] = false;
-      }
+    if (!prev || prev !== url) {
+      await sendMessage(`🚨 NOVO LINK\n${t.label}\n${version ? '🧪 '+version+'\n' : ''}${url}`);
     }
-
-    saveState(state);
-  } catch (err) {
-    console.error('Erro ao verificar índice:', err.response?.data || err.message);
   }
+
+  saveState(state);
+}
+
+function buildLinks() {
+  let txt = '🔗 LINKS:\n';
+  for (const t of TARGETS) {
+    const link = state.seenLinks[t.key] || 'nenhum';
+    const v = state.versions[t.key] || '';
+    txt += `\n${t.label}\n${link}${v ? '\n🧪 '+v : ''}\n`;
+  }
+  return txt;
 }
 
 async function checkCommands() {
-  try {
-    const res = await axios.get(
-      `https://api.telegram.org/bot${TOKEN}/getUpdates?offset=${lastUpdateId + 1}`,
-      { timeout: 15000 }
-    );
+  const res = await axios.get(`https://api.telegram.org/bot${TOKEN}/getUpdates?offset=${lastUpdateId+1}`);
+  for (const u of res.data.result) {
+    lastUpdateId = u.update_id;
+    const txt = u.message?.text;
 
-    const updates = res.data?.result || [];
-
-    for (const update of updates) {
-      lastUpdateId = update.update_id;
-
-      const msg = update.message;
-      if (!msg?.text) continue;
-
-      const text = msg.text.trim().toLowerCase();
-      const chatId = msg.chat.id;
-
-      let response = '';
-
-      if (text === '/start') {
-        response =
-          `🚀 Bot ativado!\n\n` +
-          `Eu monitoro apenas o índice TestFlight do WABetaInfo.\n` +
-          `Filtro só WhatsApp Beta e Instagram Beta quando estiverem no índice.\n\n` +
-          `Comandos:\n` +
-          `/status - ver status\n` +
-          `/links - ver links atuais\n` +
-          `/link - ver links atuais\n` +
-          `/ajuda - como funciona`;
-      } else if (text === '/status') {
-        response = buildStatusText();
-      } else if (text === '/links' || text === '/link') {
-        response = buildLinksText();
-      } else if (text === '/ajuda') {
-        response =
-          `❓ Como funciona:\n` +
-          `- Leio o índice do WABetaInfo\n` +
-          `- Filtro só WhatsApp Beta e Instagram Beta\n` +
-          `- Se surgir link novo, te aviso\n` +
-          `- Mostro versão e build quando der para extrair\n` +
-          `- Depois valido o TestFlight e aviso se a vaga estiver aberta`;
-      }
-
-      if (response) {
-        await sendMessage(chatId, response);
-      }
+    if (txt === '/link' || txt === '/links') {
+      await axios.post(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
+        chat_id: u.message.chat.id,
+        text: buildLinks()
+      });
     }
-  } catch (err) {
-    console.error('Erro comandos:', err.response?.data || err.message);
   }
 }
 
-console.log('Bot monitorando o WABetaInfo TestFlight Index...');
-checkIndex();
-checkCommands();
+async function loop() {
+  while (true) {
+    await checkCommands();
+    await new Promise(r => setTimeout(r, 3000));
+  }
+}
 
-setInterval(checkIndex, 60 * 1000);
-setInterval(checkCommands, 3000);
+(async () => {
+  await clearWebhook();
+  console.log('BOT ONLINE');
+  checkIndex();
+  loop();
+  setInterval(checkIndex, 60000);
+})();
