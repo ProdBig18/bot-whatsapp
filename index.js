@@ -37,6 +37,7 @@ function loadState() {
     seenLinks: {},
     notifiedLinks: {},
     notifiedOpen: {},
+    versions: {},
     status: {}
   };
 }
@@ -179,6 +180,35 @@ function buildVersionSuffix(version, build) {
   return '';
 }
 
+function buildLinksText() {
+  const lines = ['🔗 Links atuais vistos no índice:\n'];
+
+  for (const target of TARGETS) {
+    const link = state.seenLinks[target.key] || 'nenhum';
+    const version = state.versions?.[target.key]?.version || null;
+    const build = state.versions?.[target.key]?.build || null;
+
+    let extra = '';
+    if (version && build) extra = `\n🧪 Versão: ${version}\n🏗️ Build: ${build}`;
+    else if (version) extra = `\n🧪 Versão: ${version}`;
+    else if (build) extra = `\n🏗️ Build: ${build}`;
+
+    lines.push(`• ${target.label}\n${link}${extra}`);
+  }
+
+  return lines.join('\n\n');
+}
+
+function buildStatusText() {
+  const lines = ['📡 Status do monitoramento:\n'];
+
+  for (const target of TARGETS) {
+    lines.push(`• ${state.status[target.key] || `${target.label}: sem status`}`);
+  }
+
+  return lines.join('\n');
+}
+
 async function checkIndex() {
   try {
     const entries = await fetchIndexEntries();
@@ -195,25 +225,8 @@ async function checkIndex() {
       const entry = matched[0];
       const resolvedUrl = await resolveTargetUrl(entry.url);
       const previous = state.seenLinks[target.key];
-      const previousNotified = state.notifiedLinks[target.key];
 
       state.seenLinks[target.key] = resolvedUrl;
-
-      if (!previous || previous !== resolvedUrl) {
-        state.status[target.key] = `${target.label}: novo link detectado no índice`;
-
-        if (previousNotified !== resolvedUrl) {
-          await sendMessage(
-            OWNER_CHAT_ID,
-            `🚨 NOVO LINK DETECTADO NO WABETAINFO INDEX!\n` +
-              `📱 ${target.label}\n` +
-              `🔗 ${resolvedUrl}`
-          );
-          state.notifiedLinks[target.key] = resolvedUrl;
-        }
-      } else {
-        state.status[target.key] = `${target.label}: mesmo link no índice`;
-      }
 
       try {
         const tfRes = await axios.get(resolvedUrl, {
@@ -226,16 +239,35 @@ async function checkIndex() {
         const tfHtml = String(tfRes.data || '');
         const { isFull, isAvailable } = detectTestFlightAvailability(tfHtml);
         const { version, build } = extractVersionInfo(tfHtml);
+
+        if (!state.versions) state.versions = {};
+        state.versions[target.key] = { version, build };
+
+        const versionLine = version ? `🧪 Versão: ${version}\n` : '';
+        const buildLine = build ? `🏗️ Build: ${build}\n` : '';
         const versionSuffix = buildVersionSuffix(version, build);
 
+        if (!previous || previous !== resolvedUrl) {
+          state.status[target.key] = `${target.label}: novo link detectado no índice${versionSuffix}`;
+
+          await sendMessage(
+            OWNER_CHAT_ID,
+            `🚨 NOVO LINK DETECTADO NO WABETAINFO INDEX!\n` +
+              `📱 ${target.label}\n` +
+              versionLine +
+              buildLine +
+              `🔗 ${resolvedUrl}`
+          );
+
+          state.notifiedLinks[target.key] = resolvedUrl;
+        } else {
+          state.status[target.key] = `${target.label}: mesmo link no índice${versionSuffix}`;
+        }
+
         if (!isFull && isAvailable) {
-          state.status[target.key] = `${target.label}: vaga aberta${versionSuffix}`;
-
           const openKey = `${resolvedUrl}|${version || ''}|${build || ''}`;
-          if (state.notifiedOpen[target.key] !== openKey) {
-            const versionLine = version ? `🧪 Versão: ${version}\n` : '';
-            const buildLine = build ? `🏗️ Build: ${build}\n` : '';
 
+          if (state.notifiedOpen[target.key] !== openKey) {
             await sendMessage(
               OWNER_CHAT_ID,
               `🔥 VAGA ABERTA!\n` +
@@ -247,6 +279,8 @@ async function checkIndex() {
 
             state.notifiedOpen[target.key] = openKey;
           }
+
+          state.status[target.key] = `${target.label}: vaga aberta${versionSuffix}`;
         } else {
           state.status[target.key] = `${target.label}: link encontrado, mas ainda cheio${versionSuffix}`;
           state.notifiedOpen[target.key] = false;
@@ -261,27 +295,6 @@ async function checkIndex() {
   } catch (err) {
     console.error('Erro ao verificar índice:', err.response?.data || err.message);
   }
-}
-
-function buildStatusText() {
-  const lines = ['📡 Status do monitoramento:\n'];
-
-  for (const target of TARGETS) {
-    lines.push(`• ${state.status[target.key] || `${target.label}: sem status`}`);
-  }
-
-  return lines.join('\n');
-}
-
-function buildLinksText() {
-  const lines = ['🔗 Links atuais vistos no índice:\n'];
-
-  for (const target of TARGETS) {
-    const link = state.seenLinks[target.key] || 'nenhum';
-    lines.push(`• ${target.label}\n${link}`);
-  }
-
-  return lines.join('\n\n');
 }
 
 async function checkCommands() {
@@ -312,10 +325,11 @@ async function checkCommands() {
           `Comandos:\n` +
           `/status - ver status\n` +
           `/links - ver links atuais\n` +
+          `/link - ver links atuais\n` +
           `/ajuda - como funciona`;
       } else if (text === '/status') {
         response = buildStatusText();
-      } else if (text === '/links') {
+      } else if (text === '/links' || text === '/link') {
         response = buildLinksText();
       } else if (text === '/ajuda') {
         response =
@@ -323,8 +337,8 @@ async function checkCommands() {
           `- Leio o índice do WABetaInfo\n` +
           `- Filtro só WhatsApp Beta e Instagram Beta\n` +
           `- Se surgir link novo, te aviso\n` +
-          `- Depois valido o TestFlight\n` +
-          `- Quando possível, mostro versão e build na notificação`;
+          `- Mostro versão e build quando der para extrair\n` +
+          `- Depois valido o TestFlight e aviso se a vaga estiver aberta`;
       }
 
       if (response) {

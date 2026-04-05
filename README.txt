@@ -1,11 +1,10 @@
-BOT PRONTO - WABETAINFO INDEX + VERSÃO
+BOT PRONTO - LINK + VERSÃO + /LINK
 
-Esse bot:
-- lê somente o índice do WABetaInfo
-- filtra só WhatsApp Beta e Instagram Beta
-- avisa se surgir um link novo
-- valida o TestFlight
-- quando possível, mostra versão e build na notificação
+Mudanças:
+- /link e /links funcionando
+- comando de links mostra versão e build quando disponível
+- mensagem de novo link detectado tenta mostrar versão e build
+- mantém alerta de vaga aberta com versão/build quando possível
 
 Como usar:
 1. Extraia os arquivos
@@ -16,5 +15,5 @@ npm start
 
 Para subir pro GitHub/Railway:
 git add .
-git commit -m "bot index wabetainfo com versao"
+git commit -m "fix link e versao"
 git push
